@@ -75,6 +75,11 @@ output "network_profile_nat_gateway_profile_effective_outbound_ips" {
   value       = try(azapi_resource.this.output.properties.networkProfile.natGatewayProfile.effectiveOutboundIPs, [])
 }
 
+output "node_resource_group_name" {
+  description = "The name of the auto-created node resource group."
+  value       = try(azapi_resource.this.output.properties.nodeResourceGroup, null)
+}
+
 output "oidc_issuer_profile_issuer_url" {
   description = "The OIDC issuer url of the Managed Cluster."
   value       = try(azapi_resource.this.output.properties.oidcIssuerProfile.issuerURL, null)
