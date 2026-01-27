@@ -21,28 +21,23 @@ provider "azurerm" {
   }
 }
 
+module "regions" {
+  source  = "Azure/avm-utl-regions/azurerm"
+  version = "0.11.0"
 
-locals {
-  locations = [
-    "eastus",
-    "eastus2",
-    "westus2",
-    "centralus",
-    "westeurope",
-    "northeurope",
-    "southeastasia",
-    "japaneast",
-  ]
+  is_recommended         = true
+  region_name_regex      = "euap"
+  region_name_regex_mode = "not_match"
 }
+
 # This allows us to randomize the region for the resource group.
 resource "random_integer" "region_index" {
-  max = length(local.locations) - 1
+  max = length(module.regions.regions) - 1
   min = 0
 }
-## End of section to provide a random Azure region for the resource group
 
 locals {
-  location = local.locations[random_integer.region_index.result]
+  location = module.regions.regions[random_integer.region_index.result].name
 }
 
 # This ensures we have unique CAF compliant names for our resources.
@@ -72,21 +67,31 @@ data "azurerm_client_config" "current" {}
 module "default" {
   source = "../.."
 
-  default_node_pool = {
-    name       = "default"
-    vm_size    = "Standard_DS2_v2"
-    node_count = 3
+  location  = azurerm_resource_group.this.location
+  name      = module.naming.kubernetes_cluster.name_unique
+  parent_id = azurerm_resource_group.this.id
+  aad_profile = {
+    enable_azure_rbac      = true
+    tenant_id              = data.azurerm_client_config.current.tenant_id
+    admin_group_object_ids = []
+    managed                = true
+  }
+  addon_profile_oms_agent = {
+    enabled = true
+    config = {
+      log_analytics_workspace_resource_id = azurerm_log_analytics_workspace.this.id
+      use_aad_auth                        = true
+    }
+  }
+  auto_upgrade_profile = {
+    upgrade_channel = "none"
+  }
+  default_agent_pool = {
+    vm_size = "Standard_DS2_v2"
 
     upgrade_settings = {
       max_surge = "10%"
     }
-  }
-  location            = azurerm_resource_group.this.location
-  name                = module.naming.kubernetes_cluster.name_unique
-  resource_group_name = azurerm_resource_group.this.name
-  azure_active_directory_role_based_access_control = {
-    azure_rbac_enabled = true
-    tenant_id          = data.azurerm_client_config.current.tenant_id
   }
   diagnostic_settings = {
     to_la = {

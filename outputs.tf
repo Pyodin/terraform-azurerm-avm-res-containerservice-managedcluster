@@ -1,98 +1,91 @@
-output "aci_connector_object_id" {
-  description = "The object ID of the ACI Connector identity"
-  value       = try(azurerm_kubernetes_cluster.this.aci_connector_linux[0].connector_identity[0].object_id, null)
+output "azure_portal_fqdn" {
+  description = "The special FQDN used by the Azure Portal to access the Managed Cluster. This FQDN is for use only by the Azure Portal and should not be used by other clients. The Azure Portal requires certain Cross-Origin Resource Sharing (CORS) headers to be sent in some responses, which Kubernetes APIServer doesn't handle by default. This special FQDN supports CORS, allowing the Azure Portal to function properly."
+  value       = try(azapi_resource.this.output.properties.azurePortalFQDN, null)
 }
 
 output "cluster_ca_certificate" {
-  description = "The CA certificate of the AKS cluster."
-  sensitive   = true
-  value       = azurerm_kubernetes_cluster.this.kube_config[0].cluster_ca_certificate
+  description = "Base64 cluster CA certificate from user kubeconfig."
+  value       = nonsensitive(local.kubeconfig_user != null ? yamldecode(local.kubeconfig_user).clusters[0].cluster.certificate-authority-data : null)
 }
 
-output "host" {
-  description = "AKS API host — returns .fqdn when public_fqdn_enabled, otherwise kube_config[0].host"
-  sensitive   = true
-  value = (
-    var.private_cluster_enabled && var.private_cluster_public_fqdn_enabled
-  ) ? "https://${azurerm_kubernetes_cluster.this.fqdn}" : azurerm_kubernetes_cluster.this.kube_config[0].host
+output "current_kubernetes_version" {
+  description = "The version of Kubernetes the Managed Cluster is running. If kubernetesVersion was a fully specified version <major.minor.patch>, this field will be exactly equal to it. If kubernetesVersion was <major.minor>, this field will contain the full <major.minor.patch> version being used."
+  value       = try(azapi_resource.this.output.properties.currentKubernetesVersion, null)
 }
 
-output "ingress_app_object_id" {
-  description = "The object ID of the Ingress Application identity"
-  value       = try(azurerm_kubernetes_cluster.this.ingress_application_gateway[0].ingress_application_gateway_identity[0].object_id, null)
+output "fqdn" {
+  description = "The FQDN of the master pool."
+  value       = try(azapi_resource.this.output.properties.fqdn, null)
 }
 
-output "key_vault_secrets_provider_object_id" {
-  description = "The object ID of the key vault secrets provider."
-  value       = try(azurerm_kubernetes_cluster.this.key_vault_secrets_provider[0].secret_identity[0].object_id, null)
+output "identity_principal_id" {
+  description = "The principal id of the system assigned identity which is used by master components."
+  value       = try(azapi_resource.this.output.identity.principalId, null)
+}
+
+output "identity_tenant_id" {
+  description = "The tenant id of the system assigned identity which is used by master components."
+  value       = try(azapi_resource.this.output.identity.tenantId, null)
+}
+
+output "ingress_profile_web_app_routing_identity" {
+  description = "Details about a user assigned identity."
+  value       = try(azapi_resource.this.output.properties.ingressProfile.webAppRouting.identity, {})
+}
+
+output "key_vault_secrets_provider_identity" {
+  description = "The identity of the Key Vault Secrets Provider addon, including clientId, objectId, and resourceId."
+  value       = try(azapi_resource.this.output.properties.addonProfiles.azureKeyvaultSecretsProvider.identity, null)
 }
 
 output "kube_admin_config" {
-  description = "The kube_admin_config block of the AKS cluster, only available when Local Accounts & Role-Based Access Control (RBAC) with AAD are enabled."
+  description = "Admin kubeconfig raw YAML (sensitive)."
   sensitive   = true
-  value       = local.kube_admin_enabled ? azurerm_kubernetes_cluster.this.kube_admin_config : null
+  value       = local.kubeconfig_admin
 }
 
 output "kube_config" {
-  description = "The kube_config block of the AKS cluster"
+  description = "User kubeconfig raw YAML (sensitive)."
   sensitive   = true
-  value       = azurerm_kubernetes_cluster.this.kube_config
+  value       = local.kubeconfig_user
 }
 
-output "kubelet_identity_id" {
-  description = "The identity ID of the kubelet identity."
-  value       = try(azurerm_kubernetes_cluster.this.kubelet_identity[0].object_id, null)
+output "kubelet_identity" {
+  description = "The kubelet identity of the managed cluster, including clientId, objectId, and resourceId."
+  value       = try(azapi_resource.this.output.properties.identityProfile.kubeletidentity, null)
+}
+
+output "max_agent_pools" {
+  description = "The max number of agent pools for the managed cluster."
+  value       = try(azapi_resource.this.output.properties.maxAgentPools, null)
 }
 
 output "name" {
-  description = "Name of the Kubernetes cluster."
-  value       = azurerm_kubernetes_cluster.this.name
+  description = "The name of the created resource."
+  value       = azapi_resource.this.name
 }
 
-output "node_resource_group_id" {
-  description = "The resource group ID of the node resource group."
-  value       = azurerm_kubernetes_cluster.this.node_resource_group_id
+output "network_profile_load_balancer_profile_effective_outbound_ips" {
+  description = "The effective outbound IP resources of the cluster load balancer."
+  value       = try(azapi_resource.this.output.properties.networkProfile.loadBalancerProfile.effectiveOutboundIPs, [])
 }
 
-output "nodepool_resource_ids" {
-  description = "A map of nodepool keys to resource ids."
-  value = { for npk, np in module.nodepools : npk => {
-    resource_id = np.resource_id
-    name        = np.name
-    }
-  }
+output "network_profile_nat_gateway_profile_effective_outbound_ips" {
+  description = "The effective outbound IP resources of the cluster NAT gateway."
+  value       = try(azapi_resource.this.output.properties.networkProfile.natGatewayProfile.effectiveOutboundIPs, [])
 }
 
-output "oidc_issuer_url" {
-  description = "The OIDC issuer URL of the Kubernetes cluster."
-  value       = azurerm_kubernetes_cluster.this.oidc_issuer_url
+output "oidc_issuer_profile_issuer_url" {
+  description = "The OIDC issuer url of the Managed Cluster."
+  value       = try(azapi_resource.this.output.properties.oidcIssuerProfile.issuerURL, null)
 }
 
-output "private_endpoints" {
-  description = <<DESCRIPTION
-  A map of the private endpoints created.
-  DESCRIPTION
-  value       = var.private_endpoints_manage_dns_zone_group ? azurerm_private_endpoint.this_managed_dns_zone_groups : azurerm_private_endpoint.this_unmanaged_dns_zone_groups
-}
-
-output "public_fqdn" {
-  description = "Returns .fqdn when both private_cluster_enabled and private_cluster_public_fqdn_enabled are true, otherwise null"
-  value = (
-    var.private_cluster_enabled && var.private_cluster_public_fqdn_enabled
-  ) ? azurerm_kubernetes_cluster.this.fqdn : null
+output "private_fqdn" {
+  description = "The FQDN of private cluster."
+  value       = try(azapi_resource.this.output.properties.privateFQDN, null)
 }
 
 output "resource_id" {
-  description = "Resource ID of the Kubernetes cluster."
-  value       = azurerm_kubernetes_cluster.this.id
-}
-
-output "web_app_routing_client_id" {
-  description = "The object ID of the web app routing identity"
-  value       = try(azurerm_kubernetes_cluster.this.web_app_routing[0].web_app_routing_identity[0].client_id, null)
-}
-
-output "web_app_routing_object_id" {
-  description = "The object ID of the web app routing identity"
-  value       = try(azurerm_kubernetes_cluster.this.web_app_routing[0].web_app_routing_identity[0].object_id, null)
+  description = "The ID of the created resource."
+  value       = azapi_resource.this.id
 }

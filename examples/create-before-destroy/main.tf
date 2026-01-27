@@ -21,28 +21,22 @@ provider "azurerm" {
   }
 }
 
-locals {
-  locations = [
-    "eastus",
-    "eastus2",
-    "westus2",
-    "centralus",
-    "westeurope",
-    "northeurope",
-    "southeastasia",
-    "japaneast",
-  ]
+
+module "regions" {
+  source  = "Azure/avm-utl-regions/azurerm"
+  version = "0.10.0"
+
+  is_recommended = true
 }
 
 # This allows us to randomize the region for the resource group.
 resource "random_integer" "region_index" {
-  max = length(local.locations) - 1
+  max = length(module.regions.regions) - 1
   min = 0
 }
-## End of section to provide a random Azure region for the resource group
 
 locals {
-  location = local.locations[random_integer.region_index.result]
+  location = module.regions.regions[random_integer.region_index.result].name
 }
 
 # This ensures we have unique CAF compliant names for our resources.
@@ -62,58 +56,62 @@ data "azurerm_client_config" "current" {}
 module "create_before_destroy" {
   source = "../.."
 
-  default_node_pool = {
-    name                         = "default"
-    vm_size                      = "Standard_DS2_v2"
-    auto_scaling_enabled         = true
-    max_count                    = 4
-    max_pods                     = 30
-    min_count                    = 2
-    only_critical_addons_enabled = true
-
-    upgrade_settings = {
-      max_surge = "10%"
-    }
+  location  = azurerm_resource_group.this.location
+  name      = module.naming.kubernetes_cluster.name_unique
+  parent_id = azurerm_resource_group.this.id
+  aad_profile = {
+    enable_azure_rbac      = true
+    tenant_id              = data.azurerm_client_config.current.tenant_id
+    admin_group_object_ids = []
+    managed                = true
   }
-  location            = azurerm_resource_group.this.location
-  name                = module.naming.kubernetes_cluster.name_unique
-  resource_group_name = azurerm_resource_group.this.name
-  azure_active_directory_role_based_access_control = {
-    azure_rbac_enabled = true
-    tenant_id          = data.azurerm_client_config.current.tenant_id
-  }
-  create_nodepools_before_destroy = true
-  dns_prefix                      = "createexample"
-  managed_identities = {
-    system_assigned = true
-  }
-  network_profile = {
-    network_plugin = "kubenet"
-  }
-  node_pools = {
+  agent_pools = {
     unp1 = {
-      name                 = "unp1"
-      vm_size              = "Standard_DS2_v2"
-      auto_scaling_enabled = true
-      max_count            = 4
-      max_pods             = 30
-      min_count            = 2
-      os_disk_size_gb      = 128
+      name                = "unp1"
+      vm_size             = "Standard_D2S_v6"
+      enable_auto_scaling = true
+      max_count           = 2
+      max_pods            = 30
+      min_count           = 1
+      os_disk_size_gb     = 128
       upgrade_settings = {
         max_surge = "10%"
       }
     }
     unp2 = {
-      name                 = "unp2"
-      vm_size              = "Standard_DS2_v2"
-      auto_scaling_enabled = true
-      max_count            = 4
-      max_pods             = 30
-      min_count            = 2
-      os_disk_size_gb      = 128
+      name                = "unp2"
+      vm_size             = "Standard_DS2_v2"
+      enable_auto_scaling = true
+      max_count           = 2
+      max_pods            = 30
+      min_count           = 1
+      os_disk_size_gb     = 128
       upgrade_settings = {
         max_surge = "10%"
       }
     }
+  }
+  create_agentpools_before_destroy = true
+  default_agent_pool = {
+    name                = "default"
+    vm_size             = "Standard_DS2_v2"
+    enable_auto_scaling = true
+    max_count           = 2
+    max_pods            = 30
+    min_count           = 1
+    mode                = "System"
+    node_taints         = ["CriticalAddonsOnly=true:NoSchedule"]
+
+    upgrade_settings = {
+      max_surge = "10%"
+    }
+  }
+  dns_prefix = "createexample"
+  managed_identities = {
+    system_assigned = true
+  }
+  network_profile = {
+    network_plugin      = "azure"
+    network_plugin_mode = "overlay"
   }
 }

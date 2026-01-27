@@ -28,28 +28,28 @@ provider "azurerm" {
   }
 }
 
-locals {
-  locations = [
-    "eastus",
-    "eastus2",
-    "westus2",
-    "centralus",
-    "westeurope",
-    "northeurope",
-    "southeastasia",
-    "japaneast",
-  ]
+module "regions" {
+  source  = "Azure/avm-utl-regions/azurerm"
+  version = "0.10.0"
+
+  is_recommended = true
 }
 
 # This allows us to randomize the region for the resource group.
 resource "random_integer" "region_index" {
-  max = length(local.locations) - 1
+  max = length(module.regions.regions) - 1
   min = 0
 }
 ## End of section to provide a random Azure region for the resource group
 
+resource "random_string" "suffix" {
+  length  = 4
+  special = false
+  upper   = false
+}
+
 locals {
-  location = local.locations[random_integer.region_index.result]
+  location = module.regions.regions[random_integer.region_index.result].name
 }
 
 # This ensures we have unique CAF compliant names for our resources.
@@ -71,23 +71,27 @@ resource "azurerm_virtual_network" "vnet" {
   address_space       = ["10.1.0.0/16"]
 }
 
+resource "azurerm_subnet" "api_server" {
+  address_prefixes     = ["10.1.0.0/28"]
+  name                 = "apiServerSubnet"
+  resource_group_name  = azurerm_resource_group.this.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+
+  lifecycle {
+    ignore_changes = [delegation]
+  }
+}
+
 resource "azurerm_subnet" "subnet" {
-  address_prefixes     = ["10.1.0.0/24"]
+  address_prefixes     = ["10.1.1.0/24"]
   name                 = "default"
   resource_group_name  = azurerm_resource_group.this.name
   virtual_network_name = azurerm_virtual_network.vnet.name
 }
 
 resource "azurerm_subnet" "unp1_subnet" {
-  address_prefixes     = ["10.1.1.0/24"]
-  name                 = "unp1"
-  resource_group_name  = azurerm_resource_group.this.name
-  virtual_network_name = azurerm_virtual_network.vnet.name
-}
-
-resource "azurerm_subnet" "unp2_subnet" {
   address_prefixes     = ["10.1.2.0/24"]
-  name                 = "unp2"
+  name                 = "unp1"
   resource_group_name  = azurerm_resource_group.this.name
   virtual_network_name = azurerm_virtual_network.vnet.name
 }
@@ -116,6 +120,12 @@ resource "azurerm_role_assignment" "private_dns_zone_contributor" {
   role_definition_name = "Private DNS Zone Contributor"
 }
 
+resource "azurerm_role_assignment" "network_contributor" {
+  principal_id         = azurerm_user_assigned_identity.identity.principal_id
+  scope                = azurerm_virtual_network.vnet.id
+  role_definition_name = "Network Contributor"
+}
+
 resource "random_string" "dns_prefix" {
   length  = 10    # Set the length of the string
   lower   = true  # Use lowercase letters
@@ -129,72 +139,86 @@ data "azurerm_client_config" "current" {}
 module "private" {
   source = "../.."
 
-  default_node_pool = {
-    name                         = "default"
-    vm_size                      = "Standard_DS2_v2"
-    auto_scaling_enabled         = true
-    max_count                    = 4
-    max_pods                     = 30
-    min_count                    = 2
-    vnet_subnet_id               = azurerm_subnet.subnet.id
-    only_critical_addons_enabled = true
+  location  = azurerm_resource_group.this.location
+  name      = module.naming.kubernetes_cluster.name_unique
+  parent_id = azurerm_resource_group.this.id
+  aad_profile = {
+    enable_azure_rbac      = true
+    tenant_id              = data.azurerm_client_config.current.tenant_id
+    admin_group_object_ids = []
+    managed                = true
+  }
+  agent_pools = {
+    unp1 = {
+      name                = "userpool1"
+      vm_size             = "Standard_D2S_v6"
+      mode                = "User"
+      type                = "VirtualMachineScaleSets"
+      enable_auto_scaling = true
+      max_count           = 4
+      max_pods            = 30
+      min_count           = 2
+      os_disk_size_gb     = 128
+      vnet_subnet_id      = azurerm_subnet.unp1_subnet.id
+      upgrade_settings = {
+        max_surge = "10%"
+      }
+    }
+  }
+  agentpool_timeouts = {
+    create = "20m"
+    delete = "20m"
+    read   = "5m"
+    update = "20m"
+  }
+  api_server_access_profile = {
+    enable_private_cluster = true
+    private_dns_zone       = azurerm_private_dns_zone.zone.id
+  }
+  default_agent_pool = {
+    name                = "default"
+    vm_size             = "Standard_D2S_v6"
+    enable_auto_scaling = true
+    max_count           = 4
+    max_pods            = 30
+    min_count           = 2
+    vnet_subnet_id      = azurerm_subnet.subnet.id
+    node_taints         = ["CriticalAddonsOnly=true:NoSchedule"]
 
     upgrade_settings = {
       max_surge = "10%"
     }
   }
-  location            = azurerm_resource_group.this.location
-  name                = module.naming.kubernetes_cluster.name_unique
-  resource_group_name = azurerm_resource_group.this.name
-  azure_active_directory_role_based_access_control = {
-    azure_rbac_enabled = true
-    tenant_id          = data.azurerm_client_config.current.tenant_id
-  }
-  dns_prefix_private_cluster = random_string.dns_prefix.result
+  fqdn_subdomain = random_string.dns_prefix.result
   managed_identities = {
     system_assigned            = false
     user_assigned_resource_ids = [azurerm_user_assigned_identity.identity.id]
   }
   network_profile = {
-    dns_service_ip = "10.10.200.10"
-    service_cidr   = "10.10.200.0/24"
-    network_plugin = "azure"
-  }
-  node_pools = {
-    unp1 = {
-      name                 = "userpool1"
-      vm_size              = "Standard_DS2_v2"
-      auto_scaling_enabled = true
-      max_count            = 4
-      max_pods             = 30
-      min_count            = 2
-      os_disk_size_gb      = 128
-      vnet_subnet_id       = azurerm_subnet.unp1_subnet.id
-
-      upgrade_settings = {
-        max_surge = "10%"
-      }
-    }
-    unp2 = {
-      name                 = "userpool2"
-      vm_size              = "Standard_DS2_v2"
-      auto_scaling_enabled = true
-      max_count            = 4
-      max_pods             = 30
-      min_count            = 2
-      os_disk_size_gb      = 128
-      vnet_subnet_id       = azurerm_subnet.unp2_subnet.id
-
-      upgrade_settings = {
-        max_surge = "10%"
+    # In enterprise environments you typically want to manage outbound traffic using your own routing.
+    # This reuqires user defined routing (UDR) to be setup in the subnet used by the AKS cluster.
+    # outbound_type       = "userDefinedRouting"
+    dns_service_ip      = "10.10.200.10"
+    service_cidr        = "10.10.200.0/24"
+    pod_cidr            = "100.64.0.0/10"
+    network_plugin      = "azure"
+    network_plugin_mode = "overlay"
+    advanced_networking = {
+      enabled = true
+      observability = {
+        enabled = true
       }
     }
   }
-  private_cluster_enabled = true
-  private_dns_zone_id     = azurerm_private_dns_zone.zone.id
-  sku_tier                = "Standard"
+  sku = {
+    name = "Base"
+    tier = "Standard"
+  }
 
-  depends_on = [azurerm_role_assignment.private_dns_zone_contributor]
+  depends_on = [
+    azurerm_role_assignment.private_dns_zone_contributor,
+    azurerm_role_assignment.network_contributor,
+  ]
 }
 ```
 
@@ -216,14 +240,16 @@ The following resources are used by this module:
 - [azurerm_private_dns_zone.zone](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/private_dns_zone) (resource)
 - [azurerm_private_dns_zone_virtual_network_link.vnet_link](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/private_dns_zone_virtual_network_link) (resource)
 - [azurerm_resource_group.this](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/resource_group) (resource)
+- [azurerm_role_assignment.network_contributor](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/role_assignment) (resource)
 - [azurerm_role_assignment.private_dns_zone_contributor](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/role_assignment) (resource)
+- [azurerm_subnet.api_server](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/subnet) (resource)
 - [azurerm_subnet.subnet](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/subnet) (resource)
 - [azurerm_subnet.unp1_subnet](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/subnet) (resource)
-- [azurerm_subnet.unp2_subnet](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/subnet) (resource)
 - [azurerm_user_assigned_identity.identity](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/user_assigned_identity) (resource)
 - [azurerm_virtual_network.vnet](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/virtual_network) (resource)
 - [random_integer.region_index](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/integer) (resource)
 - [random_string.dns_prefix](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/string) (resource)
+- [random_string.suffix](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/string) (resource)
 - [azurerm_client_config.current](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/data-sources/client_config) (data source)
 
 <!-- markdownlint-disable MD013 -->
@@ -254,6 +280,12 @@ Version: 0.4.2
 Source: ../..
 
 Version:
+
+### <a name="module_regions"></a> [regions](#module\_regions)
+
+Source: Azure/avm-utl-regions/azurerm
+
+Version: 0.10.0
 
 <!-- markdownlint-disable-next-line MD041 -->
 ## Data Collection

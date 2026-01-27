@@ -13,6 +13,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = ">= 4.46.0, < 5.0.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
@@ -32,10 +36,29 @@ module "naming" {
   version = "0.4.2"
 }
 
+module "regions" {
+  source  = "Azure/avm-utl-regions/azurerm"
+  version = "0.11.0"
+
+  is_recommended         = true
+  region_name_regex      = "euap"
+  region_name_regex_mode = "not_match"
+}
+
+# This allows us to randomize the region for the resource group.
+resource "random_integer" "region_index" {
+  max = length(module.regions.regions) - 1
+  min = 0
+}
+
+locals {
+  location = module.regions.regions[random_integer.region_index.result].name
+}
+
 # Creating the resource group
 ######################################################################################################################
 resource "azurerm_resource_group" "this" {
-  location = coalesce(var.location, "eastus")
+  location = coalesce(var.location, local.location)
   name     = coalesce(var.resource_group_name, module.naming.resource_group.name_unique)
 }
 
@@ -127,50 +150,58 @@ resource "azurerm_container_registry_task_schedule_run_now" "this" {
 module "stateful_workloads" {
   source = "../.."
 
-  default_node_pool = {
-    name                    = "systempool"
-    node_count              = 3
-    vm_size                 = "Standard_D2ds_v4"
-    os_type                 = "Linux"
-    auto_upgrade_channel    = "stable"
-    node_os_upgrade_channel = "NodeImage"
-    zones                   = [2, 3]
-
-    addon_profile = {
-      azure_key_vault_secrets_provider = {
-        enabled = true
-      }
+  location  = azurerm_resource_group.this.location
+  name      = coalesce(var.cluster_name, module.naming.kubernetes_cluster.name_unique)
+  parent_id = azurerm_resource_group.this.id
+  addon_profile_key_vault_secrets_provider = {
+    enabled = true
+    config = {
+      enable_secret_rotation = true
     }
+  }
+  agent_pools = var.agent_pools
+  auto_upgrade_profile = {
+    upgrade_channel         = "stable"
+    node_os_upgrade_channel = "NodeImage"
+  }
+  default_agent_pool = {
+    name     = "systempool"
+    count_of = 2
+    vm_size  = "Standard_D2ds_v4"
+    os_type  = "Linux"
+    # Provide zones as strings for consistency with variable type list(string)
+    availability_zones = ["2", "3"]
+
     upgrade_settings = {
       max_surge = "10%"
     }
   }
-  location                  = azurerm_resource_group.this.location
-  name                      = coalesce(var.cluster_name, module.naming.kubernetes_cluster.name_unique)
-  resource_group_name       = azurerm_resource_group.this.name
-  automatic_upgrade_channel = "stable"
-  dns_prefix                = "statefulworkloads"
-  key_vault_secrets_provider = {
-    secret_rotation_enabled = true
-  }
-  local_account_disabled = false
+  disable_local_accounts = false
+  dns_prefix             = "statefulworkloads"
   managed_identities = {
     system_assigned = true
   }
   network_profile = {
     network_plugin = "azure"
   }
-  node_os_channel_upgrade   = "NodeImage"
-  node_pools                = var.node_pools
-  oidc_issuer_enabled       = true
-  sku_tier                  = "Standard"
-  workload_identity_enabled = true
+  oidc_issuer_profile = {
+    enabled = true
+  }
+  security_profile = {
+    workload_identity = {
+      enabled = true
+    }
+  }
+  sku = {
+    name = "Base"
+    tier = "Standard"
+  }
 }
 
 ## Section to assign the role to the kubelet identity
 ######################################################################################################################
 resource "azurerm_role_assignment" "acr_role_assignment" {
-  principal_id         = module.stateful_workloads.kubelet_identity_id
+  principal_id         = module.stateful_workloads.kubelet_identity.objectId
   scope                = module.avm_res_containerregistry_registry.resource_id
   role_definition_name = "AcrPull"
 
@@ -184,7 +215,7 @@ module "valkey" {
   count  = var.valkey_enabled ? 1 : 0
 
   key_vault_id    = module.avm_res_keyvault_vault.resource_id
-  object_id       = module.stateful_workloads.key_vault_secrets_provider_object_id
+  object_id       = module.stateful_workloads.key_vault_secrets_provider_identity.objectId
   tenant_id       = data.azurerm_client_config.current.tenant_id
   valkey_password = var.valkey_password
 }
@@ -200,7 +231,7 @@ module "mongodb" {
   location             = azurerm_resource_group.this.location
   mongodb_kv_secrets   = var.mongodb_kv_secrets
   mongodb_namespace    = var.mongodb_namespace
-  oidc_issuer_url      = module.stateful_workloads.oidc_issuer_url
+  oidc_issuer_url      = module.stateful_workloads.oidc_issuer_profile_issuer_url
   principal_id         = data.azurerm_client_config.current.object_id
   resource_group_name  = azurerm_resource_group.this.name
   service_account_name = var.service_account_name
@@ -217,6 +248,8 @@ The following requirements are needed by this module:
 
 - <a name="requirement_azurerm"></a> [azurerm](#requirement\_azurerm) (>= 4.46.0, < 5.0.0)
 
+- <a name="requirement_random"></a> [random](#requirement\_random) (~> 3.6)
+
 ## Resources
 
 The following resources are used by this module:
@@ -226,6 +259,7 @@ The following resources are used by this module:
 - [azurerm_resource_group.this](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/resource_group) (resource)
 - [azurerm_role_assignment.acr_role_assignment](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/role_assignment) (resource)
 - [azurerm_role_assignment.container_registry_import_for_task](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/resources/role_assignment) (resource)
+- [random_integer.region_index](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/integer) (resource)
 - [azurerm_client_config.current](https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/data-sources/client_config) (data source)
 
 <!-- markdownlint-disable MD013 -->
@@ -252,6 +286,48 @@ Description: The content of the ACR task
 Type: `string`
 
 Default: `"version: v1.1.0\nsteps:\n  - cmd: bash echo Waiting 60 seconds the propagation of the Container Registry Data Importer and Data Reader role\n  - cmd: bash sleep 60\n  - cmd: az login --identity\n  - cmd: az acr import --name $RegistryName --source acrforavmexamples.azurecr.io/valkey:latest --image valkey:latest\n"`
+
+### <a name="input_agent_pools"></a> [agent\_pools](#input\_agent\_pools)
+
+Description: Optional. The additional agent pools for the Kubernetes cluster.
+
+Type:
+
+```hcl
+map(object({
+    name               = string
+    vm_size            = string
+    count_of           = number
+    availability_zones = optional(list(string))
+    os_type            = string
+    upgrade_settings = optional(object({
+      drain_timeout_in_minutes      = optional(number)
+      node_soak_duration_in_minutes = optional(number)
+      max_surge                     = string
+    }))
+  }))
+```
+
+Default:
+
+```json
+{
+  "valkey": {
+    "availability_zones": [
+      "1",
+      "2",
+      "3"
+    ],
+    "count_of": 3,
+    "name": "valkey",
+    "os_type": "Linux",
+    "upgrade_settings": {
+      "max_surge": "10%"
+    },
+    "vm_size": "Standard_D2ds_v4"
+  }
+}
+```
 
 ### <a name="input_aks_mongodb_backup_storage_account_name"></a> [aks\_mongodb\_backup\_storage\_account\_name](#input\_aks\_mongodb\_backup\_storage\_account\_name)
 
@@ -316,47 +392,6 @@ Description: The name of the mongodb namespace to create
 Type: `string`
 
 Default: `null`
-
-### <a name="input_node_pools"></a> [node\_pools](#input\_node\_pools)
-
-Description: Optional. The additional node pools for the Kubernetes cluster.
-
-Type:
-
-```hcl
-map(object({
-    name       = string
-    vm_size    = string
-    node_count = number
-    zones      = optional(list(string))
-    os_type    = string
-    upgrade_settings = optional(object({
-      drain_timeout_in_minutes      = optional(number)
-      node_soak_duration_in_minutes = optional(number)
-      max_surge                     = string
-    }))
-  }))
-```
-
-Default:
-
-```json
-{
-  "valkey": {
-    "name": "valkey",
-    "node_count": 3,
-    "os_type": "Linux",
-    "upgrade_settings": {
-      "max_surge": "10%"
-    },
-    "vm_size": "Standard_D2ds_v4",
-    "zones": [
-      2,
-      3
-    ]
-  }
-}
-```
 
 ### <a name="input_resource_group_name"></a> [resource\_group\_name](#input\_resource\_group\_name)
 
@@ -481,6 +516,12 @@ Version:
 Source: Azure/naming/azurerm
 
 Version: 0.4.2
+
+### <a name="module_regions"></a> [regions](#module\_regions)
+
+Source: Azure/avm-utl-regions/azurerm
+
+Version: 0.11.0
 
 ### <a name="module_stateful_workloads"></a> [stateful\_workloads](#module\_stateful\_workloads)
 
