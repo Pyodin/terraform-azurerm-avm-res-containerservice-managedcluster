@@ -105,5 +105,6 @@ module "default" {
   }
   sku = {
     tier = "Standard"
+    name = "Base"
   }
 }
